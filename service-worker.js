@@ -1,5 +1,5 @@
 
-const CACHE_NAME = 'indoor-monitor-v5-push-preferences';
+const CACHE_NAME = 'indoor-monitor-v6-notification-click-fix';
 
 const ASSETS = [
   './',
@@ -153,12 +153,51 @@ self.addEventListener('push', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const target = new URL((event.notification.data && event.notification.data.url) || './', self.location.origin).href;
+
+  // GitHub Pagesなどのサブパス配下でも、アプリのURLを正しく解決する。
+  // originを基準にすると https://username.github.io/ へ飛んでしまうため、
+  // Service Workerのscopeを基準にする。
+  const appScope = self.registration.scope;
+  const requestedUrl = event.notification.data && event.notification.data.url;
+  const target = new URL(requestedUrl || appScope, appScope).href;
+
   event.waitUntil((async () => {
-    const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of clientsList) {
-      if ('focus' in client) { await client.focus(); return; }
+    const clientsList = await self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true
+    });
+
+    // アプリのscope内にある画面を優先して再利用する。
+    const appClient = clientsList.find(client => {
+      try {
+        return new URL(client.url).href.startsWith(appScope);
+      } catch (_) {
+        return false;
+      }
+    });
+
+    if (appClient) {
+      // 既存画面があれば通知の遷移先へ移動してから前面に出す。
+      try {
+        if ('navigate' in appClient && appClient.url !== target) {
+          const navigatedClient = await appClient.navigate(target);
+          if (navigatedClient && 'focus' in navigatedClient) {
+            await navigatedClient.focus();
+            return;
+          }
+        }
+        if ('focus' in appClient) {
+          await appClient.focus();
+          return;
+        }
+      } catch (error) {
+        console.warn('既存アプリ画面への移動に失敗しました:', error);
+      }
     }
-    if (self.clients.openWindow) await self.clients.openWindow(target);
+
+    // タスク終了などで画面が存在しない場合は、新しくアプリのURLを開く。
+    if (self.clients.openWindow) {
+      await self.clients.openWindow(target);
+    }
   })());
 });
